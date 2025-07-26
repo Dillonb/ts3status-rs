@@ -1,4 +1,5 @@
 #[macro_use] extern crate rocket;
+use ts3::Client;
 
 #[get("/")]
 fn index() -> String {
