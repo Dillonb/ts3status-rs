@@ -4,8 +4,9 @@ extern crate rocket;
 use std::collections::HashMap;
 use std::fs::File;
 use std::sync::LazyLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, Local};
 use rocket::response::content::RawHtml;
 use rocket::serde::json::Json;
 use rocket::{serde::Serialize, tokio::sync::OnceCell};
@@ -53,6 +54,7 @@ struct ServerQueryUser {
 struct User {
     connected_since_timestamp: u64,
     last_seen_timestamp: u64,
+    idle_since_timestamp: u64,
     offline_for: String,
     idle_for: String,
     nickname: String,
@@ -63,24 +65,60 @@ struct User {
     unique_id: String,
 }
 
+fn seconds_to_string(secs: u64) -> String {
+    let s = |n| if n == 1 { "" } else { "s" };
+    let days = secs / 86400;
+    let seconds = secs % 86400;
+    let hours = seconds / 3600;
+    let seconds = seconds % 3600;
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+
+    let mut parts = Vec::new();
+    if days > 0 {
+        parts.push(format!("{} day{}", days, s(days)));
+    }
+    if hours > 0 {
+        parts.push(format!("{} hour{}", hours, s(hours)));
+    }
+    if minutes > 0 {
+        parts.push(format!("{} minute{}", minutes, s(minutes)));
+    }
+    if seconds > 0 {
+        parts.push(format!("{} second{}", seconds, s(seconds)));
+    }
+
+    parts.join(" ")
+}
+
 impl User {
     fn from_server_query_user(squ: &ServerQueryUser) -> Self {
-        let idle_secs = squ.client_idle_time as u64 / 1000;
-        let now_timestamp = SystemTime::now()
+        let idle_for = Duration::from_millis(squ.client_idle_time as u64);
+        let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
+            .unwrap();
+
+        let now_datetime : DateTime<Local> = SystemTime::now().into();
+
+        let idle_since = now - idle_for;
+        let idle_since_datetime : DateTime<Local> = (SystemTime::UNIX_EPOCH + idle_since).into();
+
+        let connected_since = Duration::from_secs(squ.client_lastconnected as u64);
+        let connected_since_datetime : DateTime<Local> = (SystemTime::UNIX_EPOCH + connected_since).into();
+
+        let date_fmt_str = "%Y-%m-%d %H:%M:%S";
 
         User {
-            connected_since_timestamp: squ.client_lastconnected * 1000,
-            last_seen_timestamp: now_timestamp as u64,
-            offline_for: "TODO".to_string(),
-            idle_for: "TODO".to_string(),
+            connected_since_timestamp: connected_since.as_millis() as u64,
+            last_seen_timestamp: now.as_millis() as u64, // TODO - when I add offline users
+            idle_since_timestamp: idle_since.as_millis() as u64,
+            offline_for: "".to_string(), // TODO - when I add offline users
+            idle_for: seconds_to_string(idle_for.as_secs()),
             nickname: squ.client_nickname.clone(),
-            connected_since: "TODO".to_string(),
-            last_seen: "TODO".to_string(),
-            idle_since: format!("{}s", idle_secs),
-            online: true, // TODO
+            connected_since: connected_since_datetime.format(date_fmt_str).to_string(),
+            last_seen: now_datetime.format(date_fmt_str).to_string(), // TODO - when I add offline users
+            idle_since: idle_since_datetime.format(date_fmt_str).to_string(),
+            online: true, // TODO - when I add offline users
             unique_id: squ.client_unique_identifier.clone(),
         }
     }
@@ -95,6 +133,7 @@ fn load_properties() -> HashMap<String, String> {
 
 static PROPERTIES: LazyLock<HashMap<String, String>> = LazyLock::new(|| load_properties());
 
+// TODO: caching
 async fn list_users(client: &Client) -> Result<List<ServerQueryUser, Pipe>, ts3::Error> {
     let req = RequestBuilder::new("clientlist")
         .flag("-uid")
