@@ -16,7 +16,7 @@ mod properties;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct User {
+struct ParsedUser {
     connected_since_timestamp: u64,
     last_seen_timestamp: u64,
     idle_since_timestamp: u64,
@@ -39,24 +39,24 @@ fn seconds_to_string(secs: u64) -> String {
     let minutes = seconds / 60;
     let seconds = seconds % 60;
 
-    let mut parts = Vec::new();
+    let mut result = String::new();
     if days > 0 {
-        parts.push(format!("{} day{}", days, s(days)));
+        result.push_str(&format!("{} day{} ", days, s(days)));
     }
     if hours > 0 {
-        parts.push(format!("{} hour{}", hours, s(hours)));
+        result.push_str(&format!("{} hour{} ", hours, s(hours)));
     }
     if minutes > 0 {
-        parts.push(format!("{} minute{}", minutes, s(minutes)));
+        result.push_str(&format!("{} minute{} ", minutes, s(minutes)));
     }
     if seconds > 0 {
-        parts.push(format!("{} second{}", seconds, s(seconds)));
+        result.push_str(&format!("{} second{} ", seconds, s(seconds)));
     }
 
-    parts.join(" ")
+    result
 }
 
-impl User {
+impl ParsedUser {
     fn from_server_query_user(squ: &ServerQueryUser) -> Self {
         let idle_for = Duration::from_millis(squ.client_idle_time as u64);
         let now = SystemTime::now()
@@ -73,7 +73,7 @@ impl User {
 
         let date_fmt_str = "%Y-%m-%d %H:%M:%S";
 
-        User {
+        ParsedUser {
             connected_since_timestamp: connected_since.as_millis() as u64,
             last_seen_timestamp: now.as_millis() as u64, // TODO - when I add offline users
             idle_since_timestamp: idle_since.as_millis() as u64,
@@ -90,22 +90,21 @@ impl User {
 }
 
 
-#[cached(time = 9)] // the web ui refreshes every 10 seconds, so cache for slightly less.
-async fn online_users() -> Vec<User> {
-    println!("Fetching online users from TS3 server...");
+#[cached(time = 1)]
+async fn online_users() -> Vec<ParsedUser> {
     let whoami = ts3_whoami().await;
     let users = ts3_list_users()
         .await
         .unwrap()
         .iter()
         .filter(|u| u.client_database_id != whoami.client_database_id) // Exclude self
-        .map(User::from_server_query_user)
+        .map(ParsedUser::from_server_query_user)
         .collect::<Vec<_>>();
     return users;
 }
 
 #[get("/api/clients/all")]
-async fn clients() -> Json<Vec<User>> {
+async fn clients() -> Json<Vec<ParsedUser>> {
     Json(online_users().await)
 }
 
