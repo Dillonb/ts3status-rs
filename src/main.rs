@@ -6,13 +6,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use cached::proc_macro::cached;
 use chrono::{DateTime, Local};
 use rocket::response::content::RawHtml;
-use rocket::serde::json::Json;
 use rocket::serde::Serialize;
+use rocket::serde::json::Json;
 
 use crate::ts3_client::{ServerQueryUser, ts3_list_users, ts3_whoami};
 
-mod ts3_client;
 mod properties;
+mod ts3_client;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -59,17 +59,16 @@ fn seconds_to_string(secs: u64) -> String {
 impl ParsedUser {
     fn from_server_query_user(squ: &ServerQueryUser) -> Self {
         let idle_for = Duration::from_millis(squ.client_idle_time as u64);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 
-        let now_datetime : DateTime<Local> = SystemTime::now().into();
+        let now_datetime: DateTime<Local> = SystemTime::now().into();
 
         let idle_since = now - idle_for;
-        let idle_since_datetime : DateTime<Local> = (SystemTime::UNIX_EPOCH + idle_since).into();
+        let idle_since_datetime: DateTime<Local> = (SystemTime::UNIX_EPOCH + idle_since).into();
 
         let connected_since = Duration::from_secs(squ.client_lastconnected as u64);
-        let connected_since_datetime : DateTime<Local> = (SystemTime::UNIX_EPOCH + connected_since).into();
+        let connected_since_datetime: DateTime<Local> =
+            (SystemTime::UNIX_EPOCH + connected_since).into();
 
         let date_fmt_str = "%Y-%m-%d %H:%M:%S";
 
@@ -88,7 +87,6 @@ impl ParsedUser {
         }
     }
 }
-
 
 #[cached(time = 1)]
 async fn online_users() -> Vec<ParsedUser> {
