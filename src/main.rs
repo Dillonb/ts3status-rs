@@ -2,9 +2,10 @@
 extern crate rocket;
 
 use cached::proc_macro::cached;
+use itertools::Itertools;
 use rocket::response::content::RawHtml;
 use rocket::serde::json::Json;
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use crate::{
     ts3_client::{ts3_list_users, ts3_whoami},
@@ -29,9 +30,49 @@ async fn online_users() -> Vec<ParsedUser> {
     return users;
 }
 
+#[cached(time = 1)]
+fn db_users() -> Vec<ParsedUser> {
+    let users = user_repository::find_all_users();
+    return users;
+}
+
+async fn all_users() -> Vec<ParsedUser> {
+    let db = db_users();
+    let online = online_users().await;
+
+    online
+        .into_iter()
+        .chain(db.into_iter())
+        .unique_by(|u| u.unique_id.clone())
+        .collect::<Vec<_>>()
+}
+
+async fn offline_users() -> Vec<ParsedUser> {
+    let all = all_users().await;
+    let online: HashSet<String> = online_users()
+        .await
+        .into_iter()
+        .map(|u| u.unique_id)
+        .collect();
+
+    all.into_iter()
+        .filter(|u| !online.contains(&u.unique_id))
+        .collect::<Vec<_>>()
+}
+
 #[get("/api/clients/all")]
-async fn clients() -> Json<Vec<ParsedUser>> {
+async fn api_all_users() -> Json<Vec<ParsedUser>> {
+    Json(all_users().await)
+}
+
+#[get("/api/clients/online")]
+async fn api_online_users() -> Json<Vec<ParsedUser>> {
     Json(online_users().await)
+}
+
+#[get("/api/clients/offline")]
+async fn api_offline_users() -> Json<Vec<ParsedUser>> {
+    Json(offline_users().await)
 }
 
 #[get("/")]
@@ -42,5 +83,8 @@ fn index() -> RawHtml<&'static str> {
 
 #[launch]
 fn rocket() -> _ {
-    rocket::build().mount("/", routes![index, clients])
+    rocket::build().mount(
+        "/",
+        routes![index, api_all_users, api_online_users, api_offline_users],
+    )
 }

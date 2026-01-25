@@ -11,3 +11,4 @@ rocket = { version = "0.5.1", features = ["json"] }
 serde = "1.0.228"
 ts3 = "0.4.1"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
+itertools = "0.14.0"

@@ -1,7 +1,5 @@
 use std::{
-    env,
-    sync::{LazyLock, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    env, sync::{LazyLock, Mutex}, time::{Duration, SystemTime, UNIX_EPOCH}
 };
 
 use chrono::{DateTime, Local};
@@ -15,7 +13,7 @@ pub static CONNECTION: LazyLock<Mutex<Connection>> = LazyLock::new(|| {
     let conn = Connection::open(path).unwrap();
 
     conn.execute(
-        "CREATE TABLE user_cache (
+        "CREATE TABLE IF NOT EXISTS user_cache (
                   unique_id      TEXT PRIMARY KEY,
                   nickname       TEXT NOT NULL,
                   last_seen_timestamp INTEGER NOT NULL
@@ -40,7 +38,7 @@ pub struct ParsedUser {
     last_seen: String,
     idle_since: String,
     online: bool,
-    unique_id: String,
+    pub unique_id: String,
 }
 
 impl ParsedUser {
@@ -57,7 +55,7 @@ impl ParsedUser {
         let connected_since_datetime: DateTime<Local> =
             (SystemTime::UNIX_EPOCH + connected_since).into();
 
-        let date_fmt_str = "%Y-%m-%d %H:%M:%S";
+        let date_fmt_str = Self::get_date_fmt_str();
 
         let user = ParsedUser {
             connected_since_timestamp: connected_since.as_millis().try_into().unwrap(),
@@ -77,6 +75,10 @@ impl ParsedUser {
         user
     }
 
+    fn get_date_fmt_str() -> &'static str {
+        "%Y-%m-%d %H:%M:%S"
+    }
+
     pub fn save(&self) {
         let conn = CONNECTION.lock().unwrap();
 
@@ -90,4 +92,43 @@ impl ParsedUser {
             )
         ).expect("Failed to insert or replace user_cache record");
     }
+}
+
+pub fn find_all_users() -> Vec<ParsedUser> {
+    let conn = CONNECTION.lock().unwrap();
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT unique_id, nickname, last_seen_timestamp FROM user_cache",
+        )
+        .unwrap();
+
+    stmt
+        .query_map([], |row| {
+
+            let unique_id : String = row.get(0)?;
+            let nickname : String = row.get(1)?;
+            let last_seen_timestamp: i64 = row.get(2)?;
+            let last_seen_datetime: DateTime<Local> = (SystemTime::UNIX_EPOCH + Duration::from_millis(last_seen_timestamp as u64)).into();
+            let now_datetime: DateTime<Local> = SystemTime::now().into();
+
+            let offline_for = now_datetime - last_seen_datetime;
+
+            Ok(ParsedUser {
+                connected_since_timestamp: -1,
+                last_seen_timestamp,
+                idle_since_timestamp: -1,
+                offline_for: seconds_to_string(offline_for.num_seconds() as u64),
+                idle_for: "".to_string(),
+                nickname,
+                connected_since: "".to_string(),
+                last_seen: "".to_string(),
+                idle_since: "".to_string(),
+                online: false,
+                unique_id,
+            })
+        })
+        .unwrap()
+        .map(|res| res.unwrap())
+        .collect::<Vec<_>>()
 }
