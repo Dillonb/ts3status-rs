@@ -1,3 +1,4 @@
 /target
 .direnv
 *.sqlite3
+dev_config.toml

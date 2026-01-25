@@ -12,6 +12,9 @@
         default = pkgs.${system}.mkShell {
           buildInputs = with pkgs.${system}; [ cargo rustc rust-analyzer rustfmt ];
           DATABASE_PATH = "dev.sqlite3";
+          shellHook = ''
+            export TS3STATUS_CONFIG_PATH="$(pwd)/dev_config.toml"
+          '';
         };
       });
     };
