@@ -1,6 +1,11 @@
 use rocket::tokio::sync::OnceCell;
 
-use ts3::{Client, Decode, request::RequestBuilder, response::Whoami, shared::{ClientDatabaseId, List, list::Pipe}};
+use ts3::{
+    Client, Decode,
+    request::RequestBuilder,
+    response::Whoami,
+    shared::{ClientDatabaseId, List, list::Pipe},
+};
 
 use crate::properties::PROPERTIES;
 
@@ -71,4 +76,3 @@ pub async fn ts3_whoami() -> Whoami {
     let client = TS3_CLIENT.get_or_init(new_client).await;
     client.whoami().await.unwrap()
 }
-
