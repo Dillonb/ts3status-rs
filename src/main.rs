@@ -20,7 +20,7 @@ mod util;
 
 #[cached(time = 1)]
 async fn online_users() -> Vec<ParsedUser> {
-    let whoami = ts3_whoami().await;
+    let whoami = ts3_whoami().await.unwrap();
     let users = ts3_list_users()
         .await
         .unwrap()
@@ -87,7 +87,7 @@ async fn update_online_users() {
     let mut interval = tokio::time::interval(Duration::from_secs(update_users_every));
     loop {
         interval.tick().await;
-        online_users().await;
+        let _ = online_users().await;
     }
 }
 

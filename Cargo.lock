@@ -1634,6 +1634,7 @@ dependencies = [
  "rocket",
  "rusqlite",
  "serde",
+ "tokio",
  "ts3",
 ]
 

@@ -12,3 +12,4 @@ ts3 = "0.4.1"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 itertools = "0.14.0"
 figment = { version = "0.10", features = ["toml", "env"] }
+tokio = { version = "1.49.0", features = ["sync"] }

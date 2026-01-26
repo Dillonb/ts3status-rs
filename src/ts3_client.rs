@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use rocket::tokio::sync::OnceCell;
 
+use tokio::sync::RwLock;
 use ts3::{
     Client, Decode,
     request::RequestBuilder,
@@ -41,9 +44,9 @@ pub struct ServerQueryUser {
     pub connection_client_ip: String,
 }
 
-static TS3_CLIENT: OnceCell<Client> = OnceCell::const_new();
+static TS3_CLIENT: OnceCell<Arc<RwLock<Client>>> = OnceCell::const_new();
 
-async fn new_client() -> Client {
+async fn create_client() -> Client {
     let client = Client::connect(format!("{}:10011", PROPERTIES.ts3_host))
         .await
         .unwrap();
@@ -53,6 +56,28 @@ async fn new_client() -> Client {
         .unwrap();
     client.use_sid(1).await.unwrap();
     return client;
+}
+
+async fn init_client() -> Arc<RwLock<Client>> {
+    let client = create_client().await;
+    Arc::new(RwLock::new(client))
+}
+
+async fn get_client() -> Arc<RwLock<Client>> {
+    TS3_CLIENT.get_or_init(init_client).await.clone()
+}
+
+async fn handle_ts3_result<T>(result: Result<T, ts3::Error>) -> Result<T, ts3::Error> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(e) => {
+            // Recreate the client on all errors. TODO: only on connection errors / broken pipe
+            let client = get_client().await;
+            let mut client = client.write().await;
+            *client = create_client().await;
+            Err(e)
+        }
+    }
 }
 
 pub async fn ts3_list_users() -> Result<List<ServerQueryUser, Pipe>, ts3::Error> {
@@ -69,11 +94,21 @@ pub async fn ts3_list_users() -> Result<List<ServerQueryUser, Pipe>, ts3::Error>
         .flag("-badges")
         .flag("-location");
 
-    let client = TS3_CLIENT.get_or_init(new_client).await;
-    client.send(req).await
+    let result = {
+        let client = get_client().await;
+        let client = client.read().await;
+        client.send(req).await
+    };
+
+    handle_ts3_result(result).await
 }
 
-pub async fn ts3_whoami() -> Whoami {
-    let client = TS3_CLIENT.get_or_init(new_client).await;
-    client.whoami().await.unwrap()
+pub async fn ts3_whoami() -> Result<Whoami, ts3::Error> {
+    let result = {
+        let client = get_client().await;
+        let client = client.read().await;
+        client.whoami().await
+    };
+
+    handle_ts3_result(result).await
 }
