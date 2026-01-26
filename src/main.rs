@@ -3,8 +3,9 @@ extern crate rocket;
 
 use cached::proc_macro::cached;
 use itertools::Itertools;
-use rocket::response::content::RawHtml;
+use rocket::fairing::AdHoc;
 use rocket::serde::json::Json;
+use rocket::{response::content::RawHtml, tokio};
 use std::{collections::HashSet, time::Duration};
 
 use crate::{
@@ -81,10 +82,25 @@ fn index() -> RawHtml<&'static str> {
     RawHtml(INDEX_HTML)
 }
 
+async fn update_online_users() {
+    let update_users_every = 30;
+    let mut interval = tokio::time::interval(Duration::from_secs(update_users_every));
+    loop {
+        interval.tick().await;
+        online_users().await;
+    }
+}
+
 #[launch]
 fn rocket() -> _ {
-    rocket::build().mount(
-        "/",
-        routes![index, api_all_users, api_online_users, api_offline_users],
-    )
+    rocket::build()
+        .attach(AdHoc::on_liftoff("Online Users Updater", |_| {
+            Box::pin(async move {
+                tokio::spawn(update_online_users());
+            })
+        }))
+        .mount(
+            "/",
+            routes![index, api_all_users, api_online_users, api_offline_users],
+        )
 }
