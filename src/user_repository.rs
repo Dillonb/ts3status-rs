@@ -1,16 +1,13 @@
-use std::{
-    env, sync::{LazyLock, Mutex}, time::{Duration, SystemTime, UNIX_EPOCH}
-};
+use std::{ sync::{LazyLock, Mutex}, time::{Duration, SystemTime, UNIX_EPOCH}};
 
 use chrono::{DateTime, Local};
 use rocket::serde::Serialize;
 use rusqlite::Connection;
 
-use crate::{ts3_client::ServerQueryUser, util::seconds_to_string};
+use crate::{properties::PROPERTIES, ts3_client::ServerQueryUser, util::seconds_to_string};
 
 pub static CONNECTION: LazyLock<Mutex<Connection>> = LazyLock::new(|| {
-    let path = env::var("DATABASE_PATH").unwrap();
-    let conn = Connection::open(path).unwrap();
+    let conn = Connection::open(&PROPERTIES.database_path).unwrap();
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS user_cache (
