@@ -1,4 +1,7 @@
-use std::{ sync::{LazyLock, Mutex}, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{
+    sync::{LazyLock, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use chrono::{DateTime, Local};
 use rocket::serde::Serialize;
@@ -58,8 +61,8 @@ impl ParsedUser {
             connected_since_timestamp: connected_since.as_millis().try_into().unwrap(),
             idle_since_timestamp: idle_since.as_millis().try_into().unwrap(),
             last_seen_timestamp: now.as_millis().try_into().unwrap(), // This user came from a server query user, which means they are online
-            offline_for: "".to_string(), // Same as above
-            online: true, // Same as above
+            offline_for: "".to_string(),                              // Same as above
+            online: true,                                             // Same as above
             last_seen: now_datetime.format(date_fmt_str).to_string(), // Same as above
             idle_for: seconds_to_string(idle_for.as_secs()),
             nickname: squ.client_nickname.clone(),
@@ -82,12 +85,9 @@ impl ParsedUser {
         conn.execute(
             "INSERT OR REPLACE INTO user_cache (unique_id, nickname, last_seen_timestamp)
              VALUES (?1, ?2, ?3)",
-            (
-                &self.unique_id,
-                &self.nickname,
-                &self.last_seen_timestamp,
-            )
-        ).expect("Failed to insert or replace user_cache record");
+            (&self.unique_id, &self.nickname, &self.last_seen_timestamp),
+        )
+        .expect("Failed to insert or replace user_cache record");
     }
 }
 
@@ -95,37 +95,34 @@ pub fn find_all_users() -> Vec<ParsedUser> {
     let conn = CONNECTION.lock().unwrap();
 
     let mut stmt = conn
-        .prepare(
-            "SELECT unique_id, nickname, last_seen_timestamp FROM user_cache",
-        )
+        .prepare("SELECT unique_id, nickname, last_seen_timestamp FROM user_cache")
         .unwrap();
 
-    stmt
-        .query_map([], |row| {
+    stmt.query_map([], |row| {
+        let unique_id: String = row.get(0)?;
+        let nickname: String = row.get(1)?;
+        let last_seen_timestamp: i64 = row.get(2)?;
+        let last_seen_datetime: DateTime<Local> =
+            (SystemTime::UNIX_EPOCH + Duration::from_millis(last_seen_timestamp as u64)).into();
+        let now_datetime: DateTime<Local> = SystemTime::now().into();
 
-            let unique_id : String = row.get(0)?;
-            let nickname : String = row.get(1)?;
-            let last_seen_timestamp: i64 = row.get(2)?;
-            let last_seen_datetime: DateTime<Local> = (SystemTime::UNIX_EPOCH + Duration::from_millis(last_seen_timestamp as u64)).into();
-            let now_datetime: DateTime<Local> = SystemTime::now().into();
+        let offline_for = now_datetime - last_seen_datetime;
 
-            let offline_for = now_datetime - last_seen_datetime;
-
-            Ok(ParsedUser {
-                connected_since_timestamp: -1,
-                last_seen_timestamp,
-                idle_since_timestamp: -1,
-                offline_for: seconds_to_string(offline_for.num_seconds() as u64),
-                idle_for: "".to_string(),
-                nickname,
-                connected_since: "".to_string(),
-                last_seen: "".to_string(),
-                idle_since: "".to_string(),
-                online: false,
-                unique_id,
-            })
+        Ok(ParsedUser {
+            connected_since_timestamp: -1,
+            last_seen_timestamp,
+            idle_since_timestamp: -1,
+            offline_for: seconds_to_string(offline_for.num_seconds() as u64),
+            idle_for: "".to_string(),
+            nickname,
+            connected_since: "".to_string(),
+            last_seen: "".to_string(),
+            idle_since: "".to_string(),
+            online: false,
+            unique_id,
         })
-        .unwrap()
-        .map(|res| res.unwrap())
-        .collect::<Vec<_>>()
+    })
+    .unwrap()
+    .map(|res| res.unwrap())
+    .collect::<Vec<_>>()
 }

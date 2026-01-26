@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
-use figment::{Figment, providers::Toml};
 use figment::providers::Format;
+use figment::{Figment, providers::Toml};
 
 fn load_properties() -> Properties {
     let config_location =

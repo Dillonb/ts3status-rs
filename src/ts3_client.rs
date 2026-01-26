@@ -44,8 +44,13 @@ pub struct ServerQueryUser {
 static TS3_CLIENT: OnceCell<Client> = OnceCell::const_new();
 
 async fn new_client() -> Client {
-    let client = Client::connect(format!("{}:10011", PROPERTIES.ts3_host)).await.unwrap();
-    client.login(&PROPERTIES.ts3_user, &PROPERTIES.ts3_pass).await.unwrap();
+    let client = Client::connect(format!("{}:10011", PROPERTIES.ts3_host))
+        .await
+        .unwrap();
+    client
+        .login(&PROPERTIES.ts3_user, &PROPERTIES.ts3_pass)
+        .await
+        .unwrap();
     client.use_sid(1).await.unwrap();
     return client;
 }
