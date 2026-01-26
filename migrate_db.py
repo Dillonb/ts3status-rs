@@ -24,7 +24,7 @@ def migrate_data(db_path):
 
         # Insert data into the user_cache table
         cursor.executemany(
-            "INSERT INTO user_cache (unique_id, nickname, last_seen_timestamp) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO user_cache (unique_id, nickname, last_seen_timestamp) VALUES (?, ?, ?)",
             user_cache_data,
         )
 
