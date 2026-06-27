@@ -57,7 +57,7 @@ impl ParsedUser {
 
         let date_fmt_str = Self::get_date_fmt_str();
 
-        let user = ParsedUser {
+        ParsedUser {
             connected_since_timestamp: connected_since.as_millis().try_into().unwrap(),
             idle_since_timestamp: idle_since.as_millis().try_into().unwrap(),
             last_seen_timestamp: now.as_millis().try_into().unwrap(), // This user came from a server query user, which means they are online
@@ -69,25 +69,33 @@ impl ParsedUser {
             connected_since: connected_since_datetime.format(date_fmt_str).to_string(),
             idle_since: idle_since_datetime.format(date_fmt_str).to_string(),
             unique_id: squ.client_unique_identifier.clone(),
-        };
-
-        user.save();
-        user
+        }
     }
 
     fn get_date_fmt_str() -> &'static str {
         "%Y-%m-%d %H:%M:%S"
     }
 
-    pub fn save(&self) {
-        let conn = CONNECTION.lock().unwrap();
+    pub fn save_all(users: &[ParsedUser]) {
+        let mut conn = CONNECTION.lock().unwrap();
 
-        conn.execute(
-            "INSERT OR REPLACE INTO user_cache (unique_id, nickname, last_seen_timestamp)
-             VALUES (?1, ?2, ?3)",
-            (&self.unique_id, &self.nickname, &self.last_seen_timestamp),
-        )
-        .expect("Failed to insert or replace user_cache record");
+        let tx = conn.transaction().expect("Failed to begin transaction");
+
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT OR REPLACE INTO user_cache (unique_id, nickname, last_seen_timestamp)
+                     VALUES (?1, ?2, ?3)",
+                )
+                .expect("Failed to prepare statement");
+
+            for user in users {
+                stmt.execute((&user.unique_id, &user.nickname, &user.last_seen_timestamp))
+                    .expect("Failed to insert or replace user_cache record");
+            }
+        }
+
+        tx.commit().expect("Failed to commit transaction");
     }
 }
 

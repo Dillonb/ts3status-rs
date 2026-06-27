@@ -28,6 +28,7 @@ async fn online_users() -> Vec<ParsedUser> {
         .filter(|u| u.client_database_id != whoami.client_database_id) // Exclude self
         .map(ParsedUser::from_server_query_user)
         .collect::<Vec<_>>();
+    ParsedUser::save_all(&users);
     return users;
 }
 
@@ -49,15 +50,15 @@ async fn all_users() -> Vec<ParsedUser> {
 }
 
 async fn offline_users() -> Vec<ParsedUser> {
-    let all = all_users().await;
-    let online: HashSet<String> = online_users()
+    let online_ids: HashSet<String> = online_users()
         .await
         .into_iter()
         .map(|u| u.unique_id)
         .collect();
 
-    all.into_iter()
-        .filter(|u| !online.contains(&u.unique_id))
+    db_users()
+        .into_iter()
+        .filter(|u| !online_ids.contains(&u.unique_id))
         .collect::<Vec<_>>()
 }
 
