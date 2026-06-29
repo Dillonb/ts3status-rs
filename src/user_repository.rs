@@ -120,7 +120,7 @@ pub fn find_all_users() -> Vec<ParsedUser> {
             connected_since_timestamp: -1,
             last_seen_timestamp,
             idle_since_timestamp: -1,
-            offline_for: seconds_to_string(offline_for.num_seconds() as u64),
+            offline_for: seconds_to_string(offline_for.num_seconds().max(0) as u64),
             idle_for: "".to_string(),
             nickname,
             connected_since: "".to_string(),
