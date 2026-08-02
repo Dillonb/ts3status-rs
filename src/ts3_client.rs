@@ -1,10 +1,10 @@
 use std::future::Future;
-use std::panic::AssertUnwindSafe;
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{error, fmt};
 
-use rocket::futures::FutureExt;
+use rocket::tokio::runtime::{Builder, Runtime};
 use rocket::tokio::sync::OnceCell;
 use rocket::tokio::time::timeout;
 
@@ -52,37 +52,101 @@ pub struct ServerQueryUser {
     pub connection_client_ip: String,
 }
 
-static TS3_CLIENT: OnceCell<Arc<RwLock<Client>>> = OnceCell::const_new();
+static TS3_CLIENT: OnceCell<Arc<RwLock<Connection>>> = OnceCell::const_new();
 
 #[derive(Debug)]
 pub enum Ts3Error {
     Query(ts3::Error),
     Timeout,
     Panic,
+    Runtime(io::Error),
 }
 
 impl fmt::Display for Ts3Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Ts3Error::Query(e) => write!(f, "{}", e),
-            Ts3Error::Timeout => {
-                write!(f, "no response within {}s", TS3_TIMEOUT.as_secs())
-            }
+            Ts3Error::Timeout => write!(f, "no response within {}s", TS3_TIMEOUT.as_secs()),
             Ts3Error::Panic => write!(f, "ts3 client panicked"),
+            Ts3Error::Runtime(e) => write!(f, "could not start a runtime: {}", e),
         }
     }
 }
 
 impl error::Error for Ts3Error {}
 
-/// The ts3 crate drives every request through background reader/writer tasks and
-/// unwraps when they die, so a request can either panic in the calling task or
-/// never resolve at all. Both are turned into ordinary errors here.
-async fn guarded<T, F>(request: F) -> Result<T, Ts3Error>
+/// A runtime that is shut down without waiting, so that it can be dropped from
+/// async code. Dropping a `Runtime` directly blocks, which panics on a runtime
+/// worker thread.
+struct BackgroundRuntime(Option<Runtime>);
+
+impl BackgroundRuntime {
+    fn new() -> Result<Self, Ts3Error> {
+        Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("ts3-client")
+            .enable_all()
+            .build()
+            .map(|runtime| Self(Some(runtime)))
+            .map_err(Ts3Error::Runtime)
+    }
+
+    fn get(&self) -> &Runtime {
+        self.0.as_ref().expect("runtime is only taken by Drop")
+    }
+}
+
+impl Drop for BackgroundRuntime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+/// A client together with the runtime its background tasks run on.
+///
+/// The ts3 crate spawns a reader, a writer and a keepalive task per connection
+/// and offers no way to stop them, so dropping the client on its own leaks
+/// those tasks and its socket for the lifetime of the process. Owning their
+/// runtime makes shutting them down possible.
+struct Connection {
+    client: Client,
+    runtime: BackgroundRuntime,
+}
+
+impl Connection {
+    async fn open() -> Result<Self, Ts3Error> {
+        let runtime = BackgroundRuntime::new()?;
+
+        // Spawning on the new runtime is what places the client's background
+        // tasks there, so that dropping it later stops them.
+        let client = run_on(&runtime, async {
+            let client = Client::connect(format!("{}:10011", PROPERTIES.ts3_host)).await?;
+            client
+                .login(&PROPERTIES.ts3_user, &PROPERTIES.ts3_pass)
+                .await?;
+            client.use_sid(1).await?;
+            Ok(client)
+        })
+        .await?;
+
+        Ok(Connection { client, runtime })
+    }
+}
+
+/// Runs a request on a connection's runtime.
+///
+/// The ts3 crate unwraps when its background tasks die, so a request may panic
+/// in the calling task or never resolve at all. Running it as a task turns a
+/// panic into a `JoinError`, and the timeout bounds a request the server never
+/// answers.
+async fn run_on<T, F>(runtime: &BackgroundRuntime, request: F) -> Result<T, Ts3Error>
 where
-    F: Future<Output = Result<T, ts3::Error>>,
+    F: Future<Output = Result<T, ts3::Error>> + Send + 'static,
+    T: Send + 'static,
 {
-    match timeout(TS3_TIMEOUT, AssertUnwindSafe(request).catch_unwind()).await {
+    match timeout(TS3_TIMEOUT, runtime.get().spawn(request)).await {
         Ok(Ok(Ok(value))) => Ok(value),
         Ok(Ok(Err(e))) => Err(Ts3Error::Query(e)),
         Ok(Err(_)) => Err(Ts3Error::Panic),
@@ -90,30 +154,33 @@ where
     }
 }
 
-async fn create_client() -> Result<Client, Ts3Error> {
-    let client = guarded(Client::connect(format!("{}:10011", PROPERTIES.ts3_host))).await?;
-    guarded(client.login(&PROPERTIES.ts3_user, &PROPERTIES.ts3_pass)).await?;
-    guarded(client.use_sid(1)).await?;
-    Ok(client)
-}
-
-async fn get_client() -> Result<Arc<RwLock<Client>>, Ts3Error> {
+async fn get_connection() -> Result<Arc<RwLock<Connection>>, Ts3Error> {
     TS3_CLIENT
-        .get_or_try_init(|| async { create_client().await.map(|c| Arc::new(RwLock::new(c))) })
+        .get_or_try_init(|| async { Connection::open().await.map(RwLock::new).map(Arc::new) })
         .await
         .map(Arc::clone)
 }
 
-async fn handle_ts3_result<T>(result: Result<T, Ts3Error>) -> Result<T, Ts3Error> {
+async fn request<T, F, Fut>(call: F) -> Result<T, Ts3Error>
+where
+    F: FnOnce(Client) -> Fut,
+    Fut: Future<Output = Result<T, ts3::Error>> + Send + 'static,
+    T: Send + 'static,
+{
+    let connection = get_connection().await?;
+
+    let result = {
+        let guard = connection.read().await;
+        run_on(&guard.runtime, call(guard.client.clone())).await
+    };
+
     if let Err(e) = &result {
         warn_!("TS3 request failed ({}), reconnecting", e);
 
-        // Recreate the client on all errors. TODO: only on connection errors / broken pipe
-        if let Some(client) = TS3_CLIENT.get() {
-            match create_client().await {
-                Ok(new_client) => *client.write().await = new_client,
-                Err(e) => error_!("Failed to reconnect to TS3: {}", e),
-            }
+        match Connection::open().await {
+            // Replacing the connection shuts the old one down.
+            Ok(new) => *connection.write().await = new,
+            Err(e) => error_!("Failed to reconnect to TS3: {}", e),
         }
     }
 
@@ -134,21 +201,46 @@ pub async fn ts3_list_users() -> Result<List<ServerQueryUser, Pipe>, Ts3Error> {
         .flag("-badges")
         .flag("-location");
 
-    let result = {
-        let client = get_client().await?;
-        let client = client.read().await;
-        guarded(client.send(req)).await
-    };
-
-    handle_ts3_result(result).await
+    request(|client| async move { client.send(req).await }).await
 }
 
 pub async fn ts3_whoami() -> Result<Whoami, Ts3Error> {
-    let result = {
-        let client = get_client().await?;
-        let client = client.read().await;
-        guarded(client.whoami()).await
-    };
+    request(|client| async move { client.whoami().await }).await
+}
 
-    handle_ts3_result(result).await
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rocket::tokio::time::sleep;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// The reason a connection owns its runtime: the ts3 crate cannot stop its
+    /// own background tasks, so dropping the runtime has to do it.
+    #[rocket::async_test]
+    async fn dropping_a_connection_stops_its_background_tasks() {
+        let running = Arc::new(AtomicBool::new(false));
+        let runtime = BackgroundRuntime::new().unwrap();
+
+        let flag = Arc::clone(&running);
+        runtime.get().spawn(async move {
+            loop {
+                flag.store(true, Ordering::SeqCst);
+                sleep(Duration::from_millis(10)).await;
+            }
+        });
+
+        sleep(Duration::from_millis(100)).await;
+        assert!(running.load(Ordering::SeqCst), "task should be running");
+
+        // Also asserts that this does not panic, unlike dropping a `Runtime`.
+        drop(runtime);
+        sleep(Duration::from_millis(100)).await;
+
+        running.store(false, Ordering::SeqCst);
+        sleep(Duration::from_millis(100)).await;
+        assert!(
+            !running.load(Ordering::SeqCst),
+            "task kept running after its runtime was dropped"
+        );
+    }
 }
