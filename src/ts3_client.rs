@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use ts3::{
     Client, Decode,
     request::RequestBuilder,
-    shared::{ClientDatabaseId, List, list::Pipe},
+    shared::{ClientDatabaseId, List, ServerId, list::Pipe},
 };
 
 use crate::properties::PROPERTIES;
@@ -110,7 +110,16 @@ impl Connection {
             client
                 .login(&PROPERTIES.ts3_user, &PROPERTIES.ts3_pass)
                 .await?;
-            client.use_sid(1).await?;
+            // The nickname goes on `use` rather than a later `clientupdate`:
+            // the server appends a number on collision instead of failing, and
+            // it leaves the query account's stored default alone.
+            client
+                .send::<(), _>(
+                    RequestBuilder::new("use")
+                        .arg("sid", ServerId(1))
+                        .arg("client_nickname", PROPERTIES.ts3_nick.as_str()),
+                )
+                .await?;
             Ok(client)
         });
 

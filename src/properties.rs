@@ -16,7 +16,6 @@ fn load_properties() -> Properties {
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct Properties {
     pub database_path: String,
     pub ts3_host: String,
