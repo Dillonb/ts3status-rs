@@ -10,7 +10,7 @@ use rocket::{response::content::RawHtml, tokio};
 use std::{collections::HashSet, time::Duration};
 
 use crate::{
-    ts3_client::{Ts3Error, ts3_list_users, ts3_whoami},
+    ts3_client::{Ts3Error, ts3_list_users},
     user_repository::ParsedUser,
 };
 
@@ -23,11 +23,10 @@ const UPDATE_USERS_EVERY: Duration = Duration::from_secs(30);
 
 #[cached(time = 1, result = true)]
 async fn online_users() -> Result<Vec<ParsedUser>, Ts3Error> {
-    let whoami = ts3_whoami().await?;
     let users = ts3_list_users()
         .await?
         .iter()
-        .filter(|u| u.client_database_id != whoami.client_database_id) // Exclude self
+        .filter(|u| u.is_voice_client()) // Only show voice clients, not ServerQuery clients
         .map(ParsedUser::from_server_query_user)
         .collect::<Vec<_>>();
     if let Err(e) = ParsedUser::save_all(&users) {

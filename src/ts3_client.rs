@@ -12,7 +12,6 @@ use tokio::sync::RwLock;
 use ts3::{
     Client, Decode,
     request::RequestBuilder,
-    response::Whoami,
     shared::{ClientDatabaseId, List, list::Pipe},
 };
 
@@ -50,6 +49,14 @@ pub struct ServerQueryUser {
     pub client_icon_id: u32,
     pub client_country: String,
     pub connection_client_ip: String,
+}
+
+impl ServerQueryUser {
+    /// `client_type` is 0 for a real voice client and 1 for a ServerQuery
+    /// connection, which is not a user of the server.
+    pub fn is_voice_client(&self) -> bool {
+        self.client_type == 0
+    }
 }
 
 static TS3_CLIENT: OnceCell<Arc<RwLock<Connection>>> = OnceCell::const_new();
@@ -199,8 +206,4 @@ pub async fn ts3_list_users() -> Result<List<ServerQueryUser, Pipe>, Ts3Error> {
             .flag("-location"),
     )
     .await
-}
-
-pub async fn ts3_whoami() -> Result<Whoami, Ts3Error> {
-    request(RequestBuilder::new("whoami")).await
 }
