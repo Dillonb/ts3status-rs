@@ -33,13 +33,13 @@
 
 
             var offlineClientsTemplate = Handlebars.compile(`
-                {{#clients}}
+                {{#each clients}}
                     <tr>
                         <td>{{this.nickname}}</td>
                         <td>{{timestamp this.lastSeenTimestamp}}</td>
                         <td>{{this.offlineFor}}</td>
                     </tr>
-                {{/clients}}
+                {{/each}}
             `);
 
             var lastLoaded = null;
