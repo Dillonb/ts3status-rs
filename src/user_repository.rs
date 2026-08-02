@@ -1,5 +1,5 @@
 use std::{
-    sync::{LazyLock, Mutex},
+    sync::{LazyLock, Mutex, MutexGuard},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -9,7 +9,7 @@ use rusqlite::Connection;
 
 use crate::{properties::PROPERTIES, ts3_client::ServerQueryUser, util::seconds_to_string};
 
-pub static CONNECTION: LazyLock<Mutex<Connection>> = LazyLock::new(|| {
+static CONNECTION: LazyLock<Mutex<Connection>> = LazyLock::new(|| {
     let conn = Connection::open(&PROPERTIES.database_path).unwrap();
 
     conn.execute(
@@ -24,6 +24,13 @@ pub static CONNECTION: LazyLock<Mutex<Connection>> = LazyLock::new(|| {
 
     Mutex::new(conn)
 });
+
+/// Ignores poisoning, so that one panic while the lock is held does not kill
+/// database access for the rest of the process. A `Connection` stays usable:
+/// an uncommitted transaction rolls back when it is dropped.
+fn connection() -> MutexGuard<'static, Connection> {
+    CONNECTION.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -76,35 +83,30 @@ impl ParsedUser {
         "%Y-%m-%d %H:%M:%S"
     }
 
-    pub fn save_all(users: &[ParsedUser]) {
-        let mut conn = CONNECTION.lock().unwrap();
-
-        let tx = conn.transaction().expect("Failed to begin transaction");
+    pub fn save_all(users: &[ParsedUser]) -> Result<(), rusqlite::Error> {
+        let mut conn = connection();
+        let tx = conn.transaction()?;
 
         {
-            let mut stmt = tx
-                .prepare_cached(
-                    "INSERT OR REPLACE INTO user_cache (unique_id, nickname, last_seen_timestamp)
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO user_cache (unique_id, nickname, last_seen_timestamp)
                      VALUES (?1, ?2, ?3)",
-                )
-                .expect("Failed to prepare statement");
+            )?;
 
             for user in users {
-                stmt.execute((&user.unique_id, &user.nickname, &user.last_seen_timestamp))
-                    .expect("Failed to insert or replace user_cache record");
+                stmt.execute((&user.unique_id, &user.nickname, &user.last_seen_timestamp))?;
             }
         }
 
-        tx.commit().expect("Failed to commit transaction");
+        tx.commit()
     }
 }
 
-pub fn find_all_users() -> Vec<ParsedUser> {
-    let conn = CONNECTION.lock().unwrap();
+pub fn find_all_users() -> Result<Vec<ParsedUser>, rusqlite::Error> {
+    let conn = connection();
 
-    let mut stmt = conn
-        .prepare("SELECT unique_id, nickname, last_seen_timestamp FROM user_cache")
-        .unwrap();
+    let mut stmt =
+        conn.prepare("SELECT unique_id, nickname, last_seen_timestamp FROM user_cache")?;
 
     stmt.query_map([], |row| {
         let unique_id: String = row.get(0)?;
@@ -129,8 +131,6 @@ pub fn find_all_users() -> Vec<ParsedUser> {
             online: false,
             unique_id,
         })
-    })
-    .unwrap()
-    .map(|res| res.unwrap())
-    .collect::<Vec<_>>()
+    })?
+    .collect()
 }

@@ -30,14 +30,20 @@ async fn online_users() -> Result<Vec<ParsedUser>, Ts3Error> {
         .filter(|u| u.client_database_id != whoami.client_database_id) // Exclude self
         .map(ParsedUser::from_server_query_user)
         .collect::<Vec<_>>();
-    ParsedUser::save_all(&users);
+    if let Err(e) = ParsedUser::save_all(&users) {
+        // The TS3 data is still good, so serve it rather than failing the
+        // request just because it could not be cached.
+        warn_!("Could not cache users: {}", e);
+    }
     return Ok(users);
 }
 
 #[cached(time = 1)]
 fn db_users() -> Vec<ParsedUser> {
-    let users = user_repository::find_all_users();
-    return users;
+    user_repository::find_all_users().unwrap_or_else(|e| {
+        error_!("Could not read cached users: {}", e);
+        Vec::new()
+    })
 }
 
 async fn all_users() -> Result<Vec<ParsedUser>, Ts3Error> {
