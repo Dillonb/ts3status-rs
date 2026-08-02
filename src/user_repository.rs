@@ -3,7 +3,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Utc};
 use rocket::serde::Serialize;
 use rusqlite::Connection;
 
@@ -108,29 +108,50 @@ pub fn find_all_users() -> Result<Vec<ParsedUser>, rusqlite::Error> {
     let mut stmt =
         conn.prepare("SELECT unique_id, nickname, last_seen_timestamp FROM user_cache")?;
 
-    stmt.query_map([], |row| {
+    let rows = stmt.query_map([], |row| {
         let unique_id: String = row.get(0)?;
         let nickname: String = row.get(1)?;
         let last_seen_timestamp: i64 = row.get(2)?;
-        let last_seen_datetime: DateTime<Local> =
-            (SystemTime::UNIX_EPOCH + Duration::from_millis(last_seen_timestamp as u64)).into();
-        let now_datetime: DateTime<Local> = SystemTime::now().into();
 
-        let offline_for = now_datetime - last_seen_datetime;
+        Ok((unique_id, nickname, last_seen_timestamp))
+    })?;
 
-        Ok(ParsedUser {
-            connected_since_timestamp: -1,
-            last_seen_timestamp,
-            idle_since_timestamp: -1,
-            offline_for: seconds_to_string(offline_for.num_seconds().max(0) as u64),
-            idle_for: "".to_string(),
-            nickname,
-            connected_since: "".to_string(),
-            last_seen: "".to_string(),
-            idle_since: "".to_string(),
-            online: false,
-            unique_id,
+    // Skip rows this app cannot make sense of rather than failing the whole
+    // listing.
+    Ok(rows
+        .filter_map(|row| {
+            let (unique_id, nickname, last_seen_timestamp) = match row {
+                Ok(row) => row,
+                Err(e) => {
+                    warn_!("Skipping unreadable user_cache row: {}", e);
+                    return None;
+                }
+            };
+
+            let Some(last_seen) = DateTime::from_timestamp_millis(last_seen_timestamp) else {
+                warn_!(
+                    "Skipping cached user {} with out of range last_seen_timestamp {}",
+                    unique_id,
+                    last_seen_timestamp
+                );
+                return None;
+            };
+
+            let offline_for = Utc::now() - last_seen;
+
+            Some(ParsedUser {
+                connected_since_timestamp: -1,
+                last_seen_timestamp,
+                idle_since_timestamp: -1,
+                offline_for: seconds_to_string(offline_for.num_seconds().max(0) as u64),
+                idle_for: "".to_string(),
+                nickname,
+                connected_since: "".to_string(),
+                last_seen: "".to_string(),
+                idle_since: "".to_string(),
+                online: false,
+                unique_id,
+            })
         })
-    })?
-    .collect()
+        .collect())
 }
