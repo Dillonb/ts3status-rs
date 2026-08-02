@@ -1,6 +1,12 @@
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::time::Duration;
+use std::{error, fmt};
 
+use rocket::futures::FutureExt;
 use rocket::tokio::sync::OnceCell;
+use rocket::tokio::time::timeout;
 
 use tokio::sync::RwLock;
 use ts3::{
@@ -11,6 +17,8 @@ use ts3::{
 };
 
 use crate::properties::PROPERTIES;
+
+const TS3_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Default, Decode)]
 pub struct ServerQueryUser {
@@ -46,41 +54,73 @@ pub struct ServerQueryUser {
 
 static TS3_CLIENT: OnceCell<Arc<RwLock<Client>>> = OnceCell::const_new();
 
-async fn create_client() -> Client {
-    let client = Client::connect(format!("{}:10011", PROPERTIES.ts3_host))
-        .await
-        .unwrap();
-    client
-        .login(&PROPERTIES.ts3_user, &PROPERTIES.ts3_pass)
-        .await
-        .unwrap();
-    client.use_sid(1).await.unwrap();
-    return client;
+#[derive(Debug)]
+pub enum Ts3Error {
+    Query(ts3::Error),
+    Timeout,
+    Panic,
 }
 
-async fn init_client() -> Arc<RwLock<Client>> {
-    let client = create_client().await;
-    Arc::new(RwLock::new(client))
-}
-
-async fn get_client() -> Arc<RwLock<Client>> {
-    TS3_CLIENT.get_or_init(init_client).await.clone()
-}
-
-async fn handle_ts3_result<T>(result: Result<T, ts3::Error>) -> Result<T, ts3::Error> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(e) => {
-            // Recreate the client on all errors. TODO: only on connection errors / broken pipe
-            let client = get_client().await;
-            let mut client = client.write().await;
-            *client = create_client().await;
-            Err(e)
+impl fmt::Display for Ts3Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Ts3Error::Query(e) => write!(f, "{}", e),
+            Ts3Error::Timeout => {
+                write!(f, "no response within {}s", TS3_TIMEOUT.as_secs())
+            }
+            Ts3Error::Panic => write!(f, "ts3 client panicked"),
         }
     }
 }
 
-pub async fn ts3_list_users() -> Result<List<ServerQueryUser, Pipe>, ts3::Error> {
+impl error::Error for Ts3Error {}
+
+/// The ts3 crate drives every request through background reader/writer tasks and
+/// unwraps when they die, so a request can either panic in the calling task or
+/// never resolve at all. Both are turned into ordinary errors here.
+async fn guarded<T, F>(request: F) -> Result<T, Ts3Error>
+where
+    F: Future<Output = Result<T, ts3::Error>>,
+{
+    match timeout(TS3_TIMEOUT, AssertUnwindSafe(request).catch_unwind()).await {
+        Ok(Ok(Ok(value))) => Ok(value),
+        Ok(Ok(Err(e))) => Err(Ts3Error::Query(e)),
+        Ok(Err(_)) => Err(Ts3Error::Panic),
+        Err(_) => Err(Ts3Error::Timeout),
+    }
+}
+
+async fn create_client() -> Result<Client, Ts3Error> {
+    let client = guarded(Client::connect(format!("{}:10011", PROPERTIES.ts3_host))).await?;
+    guarded(client.login(&PROPERTIES.ts3_user, &PROPERTIES.ts3_pass)).await?;
+    guarded(client.use_sid(1)).await?;
+    Ok(client)
+}
+
+async fn get_client() -> Result<Arc<RwLock<Client>>, Ts3Error> {
+    TS3_CLIENT
+        .get_or_try_init(|| async { create_client().await.map(|c| Arc::new(RwLock::new(c))) })
+        .await
+        .map(Arc::clone)
+}
+
+async fn handle_ts3_result<T>(result: Result<T, Ts3Error>) -> Result<T, Ts3Error> {
+    if let Err(e) = &result {
+        warn_!("TS3 request failed ({}), reconnecting", e);
+
+        // Recreate the client on all errors. TODO: only on connection errors / broken pipe
+        if let Some(client) = TS3_CLIENT.get() {
+            match create_client().await {
+                Ok(new_client) => *client.write().await = new_client,
+                Err(e) => error_!("Failed to reconnect to TS3: {}", e),
+            }
+        }
+    }
+
+    result
+}
+
+pub async fn ts3_list_users() -> Result<List<ServerQueryUser, Pipe>, Ts3Error> {
     let req = RequestBuilder::new("clientlist")
         .flag("-uid")
         .flag("-away")
@@ -95,19 +135,19 @@ pub async fn ts3_list_users() -> Result<List<ServerQueryUser, Pipe>, ts3::Error>
         .flag("-location");
 
     let result = {
-        let client = get_client().await;
+        let client = get_client().await?;
         let client = client.read().await;
-        client.send(req).await
+        guarded(client.send(req)).await
     };
 
     handle_ts3_result(result).await
 }
 
-pub async fn ts3_whoami() -> Result<Whoami, ts3::Error> {
+pub async fn ts3_whoami() -> Result<Whoami, Ts3Error> {
     let result = {
-        let client = get_client().await;
+        let client = get_client().await?;
         let client = client.read().await;
-        client.whoami().await
+        guarded(client.whoami()).await
     };
 
     handle_ts3_result(result).await
