@@ -7,7 +7,7 @@ use rocket::fairing::AdHoc;
 use rocket::http::Status;
 use rocket::serde::json::Json;
 use rocket::{response::content::RawHtml, tokio};
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, sync::LazyLock, time::Duration};
 
 use crate::{
     ts3_client::{Ts3Error, ts3_list_users},
@@ -121,6 +121,9 @@ async fn update_online_users() {
 
 #[launch]
 fn rocket() -> _ {
+    // Fail at startup rather than on the first request that reads config.
+    LazyLock::force(&properties::PROPERTIES);
+
     rocket::build()
         .attach(AdHoc::on_liftoff("Online Users Updater", |_| {
             Box::pin(async move {

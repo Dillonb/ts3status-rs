@@ -4,13 +4,15 @@ use figment::providers::Format;
 use figment::{Figment, providers::Toml};
 
 fn load_properties() -> Properties {
-    let config_location =
-        std::env::var("TS3STATUS_CONFIG_PATH").expect("env var TS3STATUS_CONFIG_PATH must be set");
-    let figment = Figment::new().merge(Toml::file(config_location));
+    let config_path = std::env::var("TS3STATUS_CONFIG_PATH")
+        .expect("env var TS3STATUS_CONFIG_PATH must be set to the path of a TOML config file");
 
-    figment
+    // file_exact, not file: a path that doesn't exist must be an error rather
+    // than an empty config that later fails with a confusing "missing field".
+    Figment::new()
+        .merge(Toml::file_exact(&config_path))
         .extract::<Properties>()
-        .expect("Failed to load configuration")
+        .unwrap_or_else(|e| panic!("Failed to load configuration from {config_path}: {e}"))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -23,4 +25,4 @@ pub struct Properties {
     pub ts3_nick: String,
 }
 
-pub static PROPERTIES: LazyLock<Properties> = LazyLock::new(|| load_properties());
+pub static PROPERTIES: LazyLock<Properties> = LazyLock::new(load_properties);
