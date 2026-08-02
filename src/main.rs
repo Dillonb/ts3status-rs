@@ -4,7 +4,7 @@ extern crate rocket;
 use cached::proc_macro::cached;
 use itertools::Itertools;
 use rocket::fairing::AdHoc;
-use rocket::http::Status;
+use rocket::http::{Header, Status};
 use rocket::serde::json::Json;
 use rocket::{response::content::RawHtml, tokio};
 use std::{collections::HashSet, sync::LazyLock, time::Duration};
@@ -56,26 +56,47 @@ async fn db_users() -> Vec<ParsedUser> {
     }
 }
 
-async fn all_users() -> Result<Vec<ParsedUser>, Ts3Error> {
+/// The database holds every user that has ever connected, so a TS3 outage does
+/// not have to blank the whole listing. When it happens the response is served
+/// from the database alone and flagged stale, since nobody can be confirmed
+/// online.
+async fn all_users() -> (Vec<ParsedUser>, bool) {
     // The database read and the TS3 request are independent, so overlap them.
     let (db, online) = tokio::join!(db_users(), online_users());
 
-    Ok(online?
+    let online = match online {
+        Ok(online) => online,
+        Err(e) => return (db, stale(e)),
+    };
+
+    let users = online
         .into_iter()
         .chain(db.into_iter())
         .unique_by(|u| u.unique_id.clone())
-        .collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    (users, false)
 }
 
-async fn offline_users() -> Result<Vec<ParsedUser>, Ts3Error> {
+async fn offline_users() -> (Vec<ParsedUser>, bool) {
     let (db, online) = tokio::join!(db_users(), online_users());
 
-    let online_ids: HashSet<String> = online?.into_iter().map(|u| u.unique_id).collect();
+    let online_ids: HashSet<String> = match online {
+        Ok(online) => online.into_iter().map(|u| u.unique_id).collect(),
+        Err(e) => return (db, stale(e)),
+    };
 
-    Ok(db
+    let users = db
         .into_iter()
         .filter(|u| !online_ids.contains(&u.unique_id))
-        .collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    (users, false)
+}
+
+fn stale(e: Ts3Error) -> bool {
+    warn_!("Serving cached users, TS3 is unavailable: {}", e);
+    true
 }
 
 fn unavailable(e: Ts3Error) -> Status {
@@ -83,19 +104,35 @@ fn unavailable(e: Ts3Error) -> Status {
     Status::ServiceUnavailable
 }
 
-#[get("/api/clients/all")]
-async fn api_all_users() -> Result<Json<Vec<ParsedUser>>, Status> {
-    all_users().await.map(Json).map_err(unavailable)
+#[derive(Responder)]
+struct Users {
+    clients: Json<Vec<ParsedUser>>,
+    stale: Header<'static>,
 }
 
+impl Users {
+    fn new((clients, stale): (Vec<ParsedUser>, bool)) -> Self {
+        Users {
+            clients: Json(clients),
+            stale: Header::new("X-Data-Stale", if stale { "true" } else { "false" }),
+        }
+    }
+}
+
+#[get("/api/clients/all")]
+async fn api_all_users() -> Users {
+    Users::new(all_users().await)
+}
+
+// Unlike the others this genuinely cannot be answered without TS3.
 #[get("/api/clients/online")]
 async fn api_online_users() -> Result<Json<Vec<ParsedUser>>, Status> {
     online_users().await.map(Json).map_err(unavailable)
 }
 
 #[get("/api/clients/offline")]
-async fn api_offline_users() -> Result<Json<Vec<ParsedUser>>, Status> {
-    offline_users().await.map(Json).map_err(unavailable)
+async fn api_offline_users() -> Users {
+    Users::new(offline_users().await)
 }
 
 #[get("/")]
