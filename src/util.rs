@@ -1,25 +1,15 @@
 pub fn seconds_to_string(secs: u64) -> String {
-    let s = |n| if n == 1 { "" } else { "s" };
-    let days = secs / 86400;
-    let seconds = secs % 86400;
-    let hours = seconds / 3600;
-    let seconds = seconds % 3600;
-    let minutes = seconds / 60;
-    let seconds = seconds % 60;
+    let units = [
+        ("day", secs / 86400),
+        ("hour", secs / 3600 % 24),
+        ("minute", secs / 60 % 60),
+        ("second", secs % 60),
+    ];
 
-    let mut result = String::new();
-    if days > 0 {
-        result.push_str(&format!("{} day{} ", days, s(days)));
-    }
-    if hours > 0 {
-        result.push_str(&format!("{} hour{} ", hours, s(hours)));
-    }
-    if minutes > 0 {
-        result.push_str(&format!("{} minute{} ", minutes, s(minutes)));
-    }
-    if seconds > 0 {
-        result.push_str(&format!("{} second{} ", seconds, s(seconds)));
-    }
-
-    result
+    units
+        .iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(unit, count)| format!("{} {}{}", count, unit, if *count == 1 { "" } else { "s" }))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
