@@ -29,27 +29,38 @@ async fn online_users() -> Result<Vec<ParsedUser>, Ts3Error> {
         .filter(|u| u.is_voice_client()) // Only show voice clients, not ServerQuery clients
         .map(ParsedUser::from_server_query_user)
         .collect::<Vec<_>>();
-    if let Err(e) = ParsedUser::save_all(&users) {
+    // SQLite writes block, so keep them off Rocket's async worker threads.
+    let to_cache = users.clone();
+    match tokio::task::spawn_blocking(move || ParsedUser::save_all(&to_cache)).await {
+        Ok(Ok(())) => {}
         // The TS3 data is still good, so serve it rather than failing the
         // request just because it could not be cached.
-        warn_!("Could not cache users: {}", e);
+        Ok(Err(e)) => warn_!("Could not cache users: {}", e),
+        Err(e) => warn_!("Caching users panicked: {}", e),
     }
     return Ok(users);
 }
 
 #[cached(time = 1)]
-fn db_users() -> Vec<ParsedUser> {
-    user_repository::find_all_users().unwrap_or_else(|e| {
-        error_!("Could not read cached users: {}", e);
-        Vec::new()
-    })
+async fn db_users() -> Vec<ParsedUser> {
+    match tokio::task::spawn_blocking(user_repository::find_all_users).await {
+        Ok(Ok(users)) => users,
+        Ok(Err(e)) => {
+            error_!("Could not read cached users: {}", e);
+            Vec::new()
+        }
+        Err(e) => {
+            error_!("Reading cached users panicked: {}", e);
+            Vec::new()
+        }
+    }
 }
 
 async fn all_users() -> Result<Vec<ParsedUser>, Ts3Error> {
-    let db = db_users();
-    let online = online_users().await?;
+    // The database read and the TS3 request are independent, so overlap them.
+    let (db, online) = tokio::join!(db_users(), online_users());
 
-    Ok(online
+    Ok(online?
         .into_iter()
         .chain(db.into_iter())
         .unique_by(|u| u.unique_id.clone())
@@ -57,13 +68,11 @@ async fn all_users() -> Result<Vec<ParsedUser>, Ts3Error> {
 }
 
 async fn offline_users() -> Result<Vec<ParsedUser>, Ts3Error> {
-    let online_ids: HashSet<String> = online_users()
-        .await?
-        .into_iter()
-        .map(|u| u.unique_id)
-        .collect();
+    let (db, online) = tokio::join!(db_users(), online_users());
 
-    Ok(db_users()
+    let online_ids: HashSet<String> = online?.into_iter().map(|u| u.unique_id).collect();
+
+    Ok(db
         .into_iter()
         .filter(|u| !online_ids.contains(&u.unique_id))
         .collect::<Vec<_>>())
