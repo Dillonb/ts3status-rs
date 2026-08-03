@@ -1,11 +1,10 @@
 use std::future::Future;
 use std::io;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 use std::{error, fmt};
 
 use rocket::tokio::runtime::{Builder, Runtime};
-use rocket::tokio::sync::OnceCell;
 use rocket::tokio::time::timeout;
 
 use tokio::sync::RwLock;
@@ -18,6 +17,8 @@ use ts3::{
 use crate::properties::PROPERTIES;
 
 const TS3_TIMEOUT: Duration = Duration::from_secs(5);
+const BACKOFF_MIN: Duration = Duration::from_secs(1);
+const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Default, Decode)]
 pub struct ServerQueryUser {
@@ -69,7 +70,58 @@ impl ServerQueryUser {
     }
 }
 
-static TS3_CLIENT: OnceCell<Arc<RwLock<Connection>>> = OnceCell::const_new();
+/// Connection state shared by all requests.
+#[derive(Default)]
+struct Ts3Client {
+    connection: Option<Connection>,
+    /// Bumped on every successful connect, so a request that failed on an old
+    /// connection cannot discard its replacement.
+    generation: u64,
+    retry_at: Option<Instant>,
+    backoff: Duration,
+}
+
+static TS3_CLIENT: LazyLock<RwLock<Ts3Client>> = LazyLock::new(RwLock::default);
+
+/// Returns the generation of a usable connection, opening one if needed. Only
+/// one task connects at a time and repeated failures back off, so an outage
+/// cannot turn every request into another login attempt.
+async fn connect() -> Result<u64, Ts3Error> {
+    {
+        let state = TS3_CLIENT.read().await;
+        if state.connection.is_some() {
+            return Ok(state.generation);
+        }
+    }
+
+    let mut state = TS3_CLIENT.write().await;
+    if state.connection.is_some() {
+        return Ok(state.generation);
+    }
+    if state.retry_at.is_some_and(|at| Instant::now() < at) {
+        return Err(Ts3Error::Disconnected);
+    }
+
+    match Connection::open().await {
+        Ok(connection) => {
+            state.connection = Some(connection);
+            state.generation += 1;
+            state.retry_at = None;
+            state.backoff = Duration::ZERO;
+            Ok(state.generation)
+        }
+        Err(e) => {
+            state.backoff = (state.backoff * 2).clamp(BACKOFF_MIN, BACKOFF_MAX);
+            state.retry_at = Some(Instant::now() + state.backoff);
+            warn_!(
+                "Could not connect to TS3, waiting {}s: {}",
+                state.backoff.as_secs(),
+                e
+            );
+            Err(e)
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum Ts3Error {
@@ -77,6 +129,7 @@ pub enum Ts3Error {
     Timeout,
     Panic,
     Runtime(io::Error),
+    Disconnected,
 }
 
 impl fmt::Display for Ts3Error {
@@ -86,6 +139,7 @@ impl fmt::Display for Ts3Error {
             Ts3Error::Timeout => write!(f, "no response within {}s", TS3_TIMEOUT.as_secs()),
             Ts3Error::Panic => write!(f, "ts3 client panicked"),
             Ts3Error::Runtime(e) => write!(f, "could not start a runtime: {}", e),
+            Ts3Error::Disconnected => write!(f, "not connected"),
         }
     }
 }
@@ -196,20 +250,23 @@ where
     T: Decode + Send + 'static,
     T::Error: Into<ts3::Error>,
 {
-    let connection = TS3_CLIENT
-        .get_or_try_init(|| async { Connection::open().await.map(RwLock::new).map(Arc::new) })
-        .await
-        .map(Arc::clone)?;
+    let generation = connect().await?;
 
-    let result = connection.read().await.send(request).await;
+    let result = {
+        let state = TS3_CLIENT.read().await;
+        match &state.connection {
+            Some(connection) => connection.send(request).await,
+            None => Err(Ts3Error::Disconnected),
+        }
+    };
 
     if let Err(e) = &result {
-        warn_!("TS3 request failed ({}), reconnecting", e);
+        warn_!("TS3 request failed, dropping the connection: {}", e);
 
-        match Connection::open().await {
-            // Replacing the connection shuts the old one down.
-            Ok(new) => *connection.write().await = new,
-            Err(e) => error_!("Failed to reconnect to TS3: {}", e),
+        let mut state = TS3_CLIENT.write().await;
+        // Not if another task already replaced the connection this failed on.
+        if state.generation == generation {
+            state.connection = None;
         }
     }
 
