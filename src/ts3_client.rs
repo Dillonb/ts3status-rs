@@ -57,6 +57,16 @@ impl ServerQueryUser {
     pub fn is_voice_client(&self) -> bool {
         self.client_type == 0
     }
+
+    /// Undoes the ts3 crate's Latin-1 decoding of each byte.
+    pub fn nickname(&self) -> String {
+        self.client_nickname
+            .chars()
+            .map(|c| u8::try_from(c).ok())
+            .collect::<Option<Vec<_>>>()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .unwrap_or_else(|| self.client_nickname.clone())
+    }
 }
 
 static TS3_CLIENT: OnceCell<Arc<RwLock<Connection>>> = OnceCell::const_new();
@@ -166,11 +176,18 @@ where
     F: Future<Output = Result<T, ts3::Error>> + Send + 'static,
     T: Send + 'static,
 {
-    match timeout(TS3_TIMEOUT, runtime.spawn(request)).await {
+    let task = runtime.spawn(request);
+    let abort = task.abort_handle();
+
+    match timeout(TS3_TIMEOUT, task).await {
         Ok(Ok(Ok(value))) => Ok(value),
         Ok(Ok(Err(e))) => Err(Ts3Error::Query(e)),
         Ok(Err(_)) => Err(Ts3Error::Panic),
-        Err(_) => Err(Ts3Error::Timeout),
+        // Dropping the handle would only detach the task.
+        Err(_) => {
+            abort.abort();
+            Err(Ts3Error::Timeout)
+        }
     }
 }
 

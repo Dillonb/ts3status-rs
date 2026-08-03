@@ -72,7 +72,7 @@ impl ParsedUser {
             online: true,                                             // Same as above
             last_seen: now_datetime.format(date_fmt_str).to_string(), // Same as above
             idle_for: seconds_to_string(idle_for.as_secs()),
-            nickname: squ.client_nickname.clone(),
+            nickname: squ.nickname(),
             connected_since: connected_since_datetime.format(date_fmt_str).to_string(),
             idle_since: idle_since_datetime.format(date_fmt_str).to_string(),
             unique_id: squ.client_unique_identifier.clone(),
