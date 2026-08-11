@@ -14,6 +14,7 @@ use crate::{
     user_repository::ParsedUser,
 };
 
+mod assets;
 mod properties;
 mod ts3_client;
 mod user_repository;
@@ -171,4 +172,5 @@ fn rocket() -> _ {
             "/",
             routes![index, api_all_users, api_online_users, api_offline_users],
         )
+        .mount("/", assets::routes())
 }
