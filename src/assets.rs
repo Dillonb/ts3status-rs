@@ -48,7 +48,9 @@ fn popper_js() -> Asset<RawJavaScript<&'static str>> {
 
 #[get("/static/handlebars-4.7.8.min.js")]
 fn handlebars_js() -> Asset<RawJavaScript<&'static str>> {
-    Asset::new(RawJavaScript(include_str!("static/handlebars-4.7.8.min.js")))
+    Asset::new(RawJavaScript(include_str!(
+        "static/handlebars-4.7.8.min.js"
+    )))
 }
 
 pub fn routes() -> Vec<Route> {
