@@ -21,6 +21,8 @@
             pname = "ts3status-rs";
             version = "0.1.0";
             src = ./.;
+            nativeBuildInputs = [ pkgs.${system}.pkg-config ];
+            buildInputs = [ pkgs.${system}.sqlite ];
             cargoLock = {
               lockFile = ./Cargo.lock;
             };
@@ -41,11 +43,13 @@
 
       devShells = forAllSystems (system: {
         default = pkgs.${system}.mkShell {
+          nativeBuildInputs = [ pkgs.${system}.pkg-config ];
           buildInputs = with pkgs.${system}; [
             cargo
             rustc
             rust-analyzer
             rustfmt
+            sqlite
           ];
           DATABASE_PATH = "dev.sqlite3";
           shellHook = ''
